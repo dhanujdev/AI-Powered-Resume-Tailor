@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Resume Tailor</title>
+  <style>
+    body {
+      width: 380px;
+      min-height: 500px;
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f9f9f9;
+    }
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    header {
+      background: linear-gradient(90deg, #4776E6 0%, #8E54E9 100%);
+      color: white;
+      padding: 16px;
+      text-align: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+    }
+    .container {
+      padding: 16px;
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card {
+      background-color: white;
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-top: 0;
+      margin-bottom: 8px;
+      color: #333;
+    }
+    button {
+      background: linear-gradient(90deg, #4776E6 0%, #8E54E9 100%);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 10px 16px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+    button:disabled {
+      background: #cccccc;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .form-group {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+      color: #555;
+    }
+    textarea, input[type="text"] {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      font-family: inherit;
+      box-sizing: border-box;
+    }
+    .status {
+      font-size: 14px;
+      margin-top: 8px;
+      color: #666;
+    }
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #ddd;
+      margin-bottom: 16px;
+    }
+    .tab {
+      padding: 8px 16px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .tab.active {
+      border-bottom: 2px solid #4776E6;
+      font-weight: bold;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    footer {
+      padding: 8px 16px;
+      text-align: center;
+      font-size: 12px;
+      color: #888;
+      border-top: 1px solid #eee;
+    }
+    .debug-container {
+      margin-top: 16px;
+      border-top: 1px dashed #ddd;
+      padding-top: 12px;
+    }
+    .debug-btn {
+      background: #f8f8f8;
+      border: 1px solid #ddd;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>AI Resume Tailor</h1>
+    </header>
+    
+    <div class="container">
+      <div class="tabs">
+        <div class="tab active" data-tab="tailor">Tailor Resume</div>
+        <div class="tab" data-tab="upload">Upload Resume</div>
+        <div class="tab" data-tab="settings">Settings</div>
+      </div>
+      
+      <!-- Tailor Resume Tab -->
+      <div class="tab-content active" id="tailor-tab">
+        <div class="card">
+          <h2 class="section-title">Job Description</h2>
+          <div class="status" id="job-status">No job description detected</div>
+          <div id="job-description-preview"></div>
+          <button id="extract-job-btn">Extract from Page</button>
+        </div>
+        
+        <div class="card">
+          <h2 class="section-title">Resume</h2>
+          <div class="status" id="resume-status">No resume uploaded</div>
+          <div id="resume-preview"></div>
+        </div>
+        
+        <button id="tailor-btn" disabled>Tailor My Resume</button>
+        <div class="status" id="tailor-status"></div>
+      </div>
+      
+      <!-- Upload Resume Tab -->
+      <div class="tab-content" id="upload-tab">
+        <div class="card">
+          <h2 class="section-title">Upload Your Resume</h2>
+          <div class="form-group">
+            <label for="resume-file">Upload PDF or DOCX file</label>
+            <input type="file" id="resume-file" accept=".pdf,.docx">
+          </div>
+          <div class="form-group">
+            <label for="resume-text">Or paste your resume text</label>
+            <textarea id="resume-text" rows="8" placeholder="Paste your resume content here..."></textarea>
+          </div>
+          <button id="save-resume-btn">Save Resume</button>
+          <div class="status" id="upload-status"></div>
+        </div>
+      </div>
+      
+      <!-- Settings Tab -->
+      <div class="tab-content" id="settings-tab">
+        <div class="card">
+          <h2 class="section-title">OpenAI API Key</h2>
+          <div class="form-group">
+            <label for="api-key">Your OpenAI API Key</label>
+            <input type="text" id="api-key" placeholder="sk-...">
+          </div>
+          <button id="save-api-key-btn">Save API Key</button>
+          <div class="status" id="api-key-status"></div>
+        </div>
+        
+        <div class="card">
+          <h2 class="section-title">Job Scraping Settings</h2>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="auto-extract" checked>
+              Automatically extract job details
+            </label>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="save-history" checked>
+              Save tailoring history
+            </label>
+          </div>
+        </div>
+        
+        <!-- Debug Section -->
+        <div class="card debug-container">
+          <h2 class="section-title">Troubleshooting</h2>
+          <p class="status">Use this button to debug site detection issues</p>
+          <button id="debugButton" class="debug-btn">Debug Site Detection</button>
+          <div class="status" id="debug-status"></div>
+        </div>
+      </div>
+    </div>
+    
+    <footer>
+      AI Resume Tailor v1.0.0
+    </footer>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html> 

@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "AI-Powered Resume Tailor",
+  "version": "1.0.0",
+  "description": "Automatically tailor your resume to job descriptions using AI",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.linkedin.com/*",
+    "*://*.indeed.com/*",
+    "*://*.glassdoor.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.linkedin.com/jobs/*",
+        "*://*.linkedin.com/jobs/collections/*",
+        "*://*.linkedin.com/jobs/search/*",
+        "*://*.linkedin.com/jobs/view/*",
+        "*://*.indeed.com/viewjob*",
+        "*://*.glassdoor.com/job-listing/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.js", "popup.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+} 
