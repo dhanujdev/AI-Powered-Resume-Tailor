@@ -4,7 +4,6 @@ import { JobRequirementExtractor } from '../services/jobRequirementExtractor';
 import { ResumeSkillMatcher } from '../services/resumeSkillMatcher';
 import { ContentGenerator } from '../services/contentGenerator';
 import { QualityEvaluator } from '../services/qualityEvaluator';
-// Import PDF.js - this will be loaded via script tag in popup.html
 
 // Initialize the background service
 chrome.runtime.onInstalled.addListener(() => {
@@ -13,7 +12,8 @@ chrome.runtime.onInstalled.addListener(() => {
   // Set default settings
   chrome.storage.local.set({
     autoExtract: true,
-    saveHistory: true
+    saveHistory: true,
+    serverUrl: 'http://localhost:3000' // Default server URL
   });
 });
 
@@ -78,164 +78,100 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // Function to parse PDF files
-async function parsePDF({ pdfBuffer }) {
+async function parsePDF({ pdfData, fileName }) {
   try {
-    // Simple text extraction from PDF using browser APIs
-    // This is a simplified version that works for basic text PDFs
-    const text = await extractTextFromPDF(pdfBuffer);
+    console.log('Received PDF data of length:', pdfData?.length);
     
-    // Process with LLM if possible
-    try {
-      const structuredData = await parseResumeWithLLM(text);
-      
-      // Return both raw text and structured data
-      return {
-        success: true,
-        text: text,
-        structuredData: structuredData,
-        info: {
-          pages: 1,
-          metadata: {}
-        }
-      };
-    } catch (llmError) {
-      console.warn('LLM parsing failed, returning only text content:', llmError);
-      
-      // If LLM fails, still return the text
-      return {
-        success: true,
-        text: text,
-        structuredData: null,
-        error: llmError.message,
-        info: {
-          pages: 1,
-          metadata: {}
-        }
-      };
+    // Verify we have the PDF data in array format
+    if (!pdfData || !Array.isArray(pdfData)) {
+      throw new Error('Invalid PDF data: Expected array of bytes');
     }
+    
+    // Retrieve the server URL from storage, with a default fallback
+    const { serverUrl = 'http://localhost:3000' } = await chrome.storage.local.get('serverUrl');
+    
+    // Send the PDF data to our backend server for processing
+    const apiUrl = `${serverUrl}/api/parse-pdf`;
+    
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ 
+        pdfData,
+        fileName 
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Server error processing PDF');
+    }
+    
+    const result = await response.json();
+    console.log('Server processed PDF successfully');
+    
+    return result;
   } catch (error) {
     console.error('Error parsing PDF:', error);
     throw new Error('Failed to parse PDF: ' + error.message);
   }
 }
 
-// Extract text from PDF using browser-compatible approach
-async function extractTextFromPDF(arrayBuffer) {
-  // Convert raw text (which might include PDF syntax) to something more readable
-  const decoder = new TextDecoder('utf-8');
-  const text = decoder.decode(arrayBuffer);
-  
-  // Extract text content, which will be a simplistic approach
-  // Remove PDF syntax markers and keep only visible text
-  let extractedText = text
-    .replace(/%PDF-.*?(\r?\n|\r)/g, '')  // Remove PDF header
-    .replace(/endobj.*?(\r?\n|\r)/g, '\n')  // Remove PDF objects
-    .replace(/stream.*?endstream/gs, '')  // Remove binary streams
-    .replace(/[\x00-\x1F\x7F-\xFF]/g, ' ')  // Remove control and non-ASCII chars
-    .replace(/\s+/g, ' ')  // Normalize whitespace
-    .trim();
-  
-  // If the above basic extraction doesn't yield good results,
-  // we'll return a message prompting the user to try text input instead
-  if (extractedText.length < 50 || extractedText.includes('/Type /Page')) {
-    return "PDF text extraction was limited. For better results, please copy and paste the resume text manually.";
-  }
-  
-  return extractedText;
-}
-
 /**
- * Uses OpenAI to parse resume text into structured data
- * @param {string} resumeText - The raw resume text to parse
- * @returns {Object} - Structured resume data
+ * Handles parsing resume text into structured data using the backend server
+ * @param {Object} data - Contains the resume text
+ * @param {Function} sendResponse - Function to send response back to caller
  */
-async function parseResumeWithLLM(resumeText) {
-  // Check if API key is available
-  const { openaiApiKey } = await chrome.storage.local.get('openaiApiKey');
-  
-  if (!openaiApiKey) {
-    throw new Error('OpenAI API key not found. Please add it in the settings.');
-  }
-  
+async function handleResumeTextParsing(data, sendResponse) {
   try {
-    const systemPrompt = `
-      You are a professional resume parser. Extract structured information from the resume text provided.
-      Return ONLY a JSON object with the following structure:
-      {
-        "name": "Full Name",
-        "email": "email@example.com",
-        "phone": "phone number",
-        "location": "City, State",
-        "summary": "Professional summary",
-        "skills": ["Skill 1", "Skill 2", ...],
-        "experience": [
-          {
-            "title": "Job Title",
-            "company": "Company Name",
-            "date": "Start Date - End Date",
-            "description": "Job description"
-          },
-          ...
-        ],
-        "education": [
-          {
-            "degree": "Degree Name",
-            "school": "School Name",
-            "date": "Graduation Date",
-            "gpa": "GPA (if available)"
-          },
-          ...
-        ]
-      }
-      
-      If any field is not found in the resume, omit it from the JSON or use an empty array/string as appropriate.
-      Do not include any explanatory text, just return the JSON object.
-    `;
+    const { resumeText } = data;
     
-    const userPrompt = `Parse the following resume into structured data:\n\n${resumeText}`;
+    if (!resumeText || typeof resumeText !== 'string') {
+      sendResponse({ success: false, error: 'Invalid resume text provided' });
+      return;
+    }
     
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    // Retrieve the server URL from storage, with a default fallback
+    const { serverUrl = 'http://localhost:3000' } = await chrome.storage.local.get('serverUrl');
+    
+    // Send resume text to backend server for processing
+    const apiUrl = `${serverUrl}/api/parse-resume-text`;
+    
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${openaiApiKey}`
       },
-      body: JSON.stringify({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        temperature: 0.1,
-        max_tokens: 2000
-      })
+      body: JSON.stringify({ resumeText })
     });
     
     if (!response.ok) {
       const errorData = await response.json();
-      throw new Error(`OpenAI API error: ${errorData.error?.message || 'Unknown error'}`);
+      throw new Error(errorData.error || 'Server error processing resume text');
     }
     
     const result = await response.json();
-    const content = result.choices[0].message.content;
+    console.log('Server processed resume text successfully');
     
-    // Try to parse the JSON response
-    try {
-      // Remove any markdown code blocks if present
-      const jsonContent = content.replace(/```json|```/g, '').trim();
-      return JSON.parse(jsonContent);
-    } catch (parseError) {
-      console.error('Error parsing LLM response as JSON:', parseError);
-      throw new Error('Failed to parse LLM response as structured data');
-    }
+    // Send back the structured data
+    sendResponse({
+      success: true,
+      structuredData: result.structuredData
+    });
+    
   } catch (error) {
-    console.error('Error in parseResumeWithLLM:', error);
-    throw error;
+    console.error('Error parsing resume text:', error);
+    sendResponse({ 
+      success: false, 
+      error: error.message || 'Failed to parse resume text'
+    });
   }
 }
 
 // Main function to tailor resume using AI
-async function tailorResume({ resume, jobDescription }) {
+async function tailorResume({ resume, structuredData, jobDescription }) {
   try {
     console.log('Starting resume tailoring process');
     
@@ -245,6 +181,10 @@ async function tailorResume({ resume, jobDescription }) {
     if (!apiKey) {
       throw new Error('OpenAI API key not found');
     }
+    
+    // Log if we have structured data available
+    const hasStructuredData = structuredData !== null && structuredData !== undefined;
+    console.log(`Tailoring with ${hasStructuredData ? 'structured' : 'raw text'} resume data`);
     
     // In a real implementation, this would use LangChain and OpenAI
     // For demo purposes, we'll simulate the AI processing with timeouts
@@ -259,15 +199,25 @@ async function tailorResume({ resume, jobDescription }) {
     // 2. Match resume skills with job requirements
     console.log('Matching resume skills with job requirements...');
     const skillMatches = await simulateAIProcessing(() => {
-      // This would use the ResumeSkillMatcher in a real implementation
-      return matchSkills(resume, jobRequirements);
+      // Use structured data if available for better matching
+      if (hasStructuredData) {
+        return matchSkillsStructured(structuredData, jobRequirements);
+      } else {
+        // Fall back to text-based matching
+        return matchSkills(resume, jobRequirements);
+      }
     });
     
     // 3. Generate tailored content
     console.log('Generating tailored content...');
     const tailoredResume = await simulateAIProcessing(() => {
-      // This would use the ContentGenerator in a real implementation
-      return generateTailoredResume(resume, jobRequirements, skillMatches);
+      // Use structured data if available for better tailoring
+      if (hasStructuredData) {
+        return generateTailoredResumeStructured(structuredData, resume, jobRequirements, skillMatches);
+      } else {
+        // Fall back to text-based tailoring
+        return generateTailoredResume(resume, jobRequirements, skillMatches);
+      }
     });
     
     // 4. Evaluate quality
@@ -473,60 +423,152 @@ function checkQuality(originalResume, tailoredResume) {
   return { passes, reason };
 }
 
-/**
- * Handles parsing resume text into structured data using the OpenAI API
- * @param {Object} data - Contains the resume text
- * @param {Function} sendResponse - Function to send response back to caller
- */
-async function handleResumeTextParsing(data, sendResponse) {
-  try {
-    const { resumeText } = data;
+// New function for structured data skill matching
+function matchSkillsStructured(structuredData, jobRequirements) {
+  const matches = [];
+  
+  // Extract skills from structured data
+  const resumeSkills = structuredData.skills || [];
+  const resumeSkillsLower = resumeSkills.map(skill => skill.toLowerCase());
+  
+  // This is a more advanced version that uses the structured data
+  jobRequirements.technicalSkills.forEach(skill => {
+    const skillLower = skill.toLowerCase();
+    const hasSkill = resumeSkillsLower.some(resumeSkill => 
+      resumeSkill.includes(skillLower) || skillLower.includes(resumeSkill)
+    );
     
-    if (!resumeText || typeof resumeText !== 'string') {
-      sendResponse({ success: false, error: 'Invalid resume text provided' });
-      return;
+    if (hasSkill) {
+      matches.push({
+        skill,
+        action: 'enhance', // Skill exists but could be enhanced
+        confidence: 0.9 // Higher confidence with structured data
+      });
+    } else {
+      matches.push({
+        skill,
+        action: 'add', // Skill doesn't exist and should be added if applicable
+        confidence: 0.7
+      });
     }
+  });
+  
+  // Match soft skills
+  jobRequirements.softSkills.forEach(skill => {
+    const skillLower = skill.toLowerCase();
+    const hasSkill = resumeSkillsLower.some(resumeSkill => 
+      resumeSkill.includes(skillLower) || skillLower.includes(resumeSkill)
+    );
     
-    // Use OpenAI API to parse the resume text
-    const structuredData = await parseResumeWithLLM(resumeText);
-    
-    // Send back both the raw text and structured data
-    sendResponse({
-      success: true,
-      structuredData: structuredData
-    });
-    
-  } catch (error) {
-    console.error('Error parsing resume text:', error);
-    sendResponse({ 
-      success: false, 
-      error: error.message || 'Failed to parse resume text'
-    });
-  }
+    if (hasSkill) {
+      matches.push({
+        skill,
+        action: 'enhance',
+        confidence: 0.85
+      });
+    } else {
+      matches.push({
+        skill,
+        action: 'add',
+        confidence: 0.6
+      });
+    }
+  });
+  
+  return matches;
 }
 
-// Also update the PDF parser to use LLM parsing for structured data
-async function handleParsePDF(data, sendResponse) {
-  try {
-    // ... existing code ...
+// New function for structured resume tailoring
+function generateTailoredResumeStructured(structuredData, originalResume, jobRequirements, skillMatches) {
+  // In a real implementation, this would use AI to intelligently rebuild the resume
+  // For demo purposes, we'll do some simple enhancements
+  
+  // Start with a generated summary based on job requirements and structured data
+  let tailoredResume = generateStructuredSummary(structuredData, jobRequirements);
+  
+  // Add skills section with enhancements
+  tailoredResume += '\n\nSKILLS\n';
+  
+  // First add existing skills with enhancements
+  const existingSkills = structuredData.skills || [];
+  existingSkills.forEach(skill => {
+    // Check if this skill matches a job requirement
+    const match = skillMatches.find(m => 
+      m.skill.toLowerCase() === skill.toLowerCase() || 
+      skill.toLowerCase().includes(m.skill.toLowerCase())
+    );
     
-    // After getting the text from PDF, also parse it with LLM
-    let structuredData = null;
-    try {
-      structuredData = await parseResumeWithLLM(text);
-    } catch (parseError) {
-      console.warn('Error parsing PDF with LLM:', parseError);
-      // Continue even if LLM parsing fails
+    if (match && match.action === 'enhance') {
+      tailoredResume += `• ${skill} (Expert level)\n`;
+    } else {
+      tailoredResume += `• ${skill}\n`;
     }
-    
-    sendResponse({
-      success: true,
-      text: text,
-      structuredData: structuredData
+  });
+  
+  // Then add missing skills that should be added
+  const skillsToAdd = skillMatches
+    .filter(match => match.action === 'add' && match.confidence > 0.65)
+    .map(match => match.skill);
+  
+  if (skillsToAdd.length > 0) {
+    tailoredResume += '\nAdditional Relevant Skills:\n';
+    skillsToAdd.forEach(skill => {
+      tailoredResume += `• ${skill} (Working knowledge)\n`;
     });
-    
-    // ... existing code ...
-  } catch (error) {
-    // ... existing error handling ...
   }
+  
+  // Add experience section
+  if (structuredData.experience && structuredData.experience.length > 0) {
+    tailoredResume += '\n\nEXPERIENCE\n';
+    
+    structuredData.experience.forEach(exp => {
+      tailoredResume += `${exp.title} at ${exp.company} | ${exp.date}\n`;
+      
+      // Add the original description, with some keywords emphasized
+      let description = exp.description;
+      
+      // Emphasize relevant skills in the description
+      jobRequirements.technicalSkills.concat(jobRequirements.softSkills).forEach(skill => {
+        const regex = new RegExp(`(${skill})`, 'gi');
+        description = description.replace(regex, '$1 (relevant skill)');
+      });
+      
+      tailoredResume += `${description}\n\n`;
+    });
+  }
+  
+  // Add education section
+  if (structuredData.education && structuredData.education.length > 0) {
+    tailoredResume += '\nEDUCATION\n';
+    
+    structuredData.education.forEach(edu => {
+      tailoredResume += `${edu.degree} - ${edu.school} | ${edu.date}\n`;
+      if (edu.gpa) {
+        tailoredResume += `GPA: ${edu.gpa}\n`;
+      }
+      tailoredResume += '\n';
+    });
+  }
+  
+  return tailoredResume;
+}
+
+// Generate a tailored summary from structured data
+function generateStructuredSummary(structuredData, jobRequirements) {
+  const name = structuredData.name || 'Professional';
+  const techSkills = jobRequirements.technicalSkills.join(', ');
+  const softSkills = jobRequirements.softSkills.join(', ');
+  
+  // Extract years of experience from structured data if available
+  let yearsOfExperience = 'Experienced';
+  if (structuredData.experience && structuredData.experience.length > 0) {
+    // Simple calculation - in a real implementation this would be more sophisticated
+    yearsOfExperience = `${structuredData.experience.length}+ years of experience`;
+  }
+  
+  return `${name}
+${structuredData.email || ''} | ${structuredData.phone || ''} | ${structuredData.location || ''}
+
+PROFESSIONAL SUMMARY
+${yearsOfExperience} professional with expertise in ${techSkills}. Strong ${softSkills} skills with a proven track record of delivering high-quality results. ${structuredData.summary || ''}`;
 } 

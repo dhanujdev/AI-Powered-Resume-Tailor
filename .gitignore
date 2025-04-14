@@ -55,4 +55,10 @@ Thumbs.db
 
 # Chrome Extension specific
 *.pem
-*.crx 
+*.crx
+
+# Project specific
+server/.env.local
+server/.env
+notRequired/
+dist/ 

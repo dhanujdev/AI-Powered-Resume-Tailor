@@ -92,6 +92,9 @@ async function extractJobDescription() {
 
 // Handle resume file upload
 async function handleResumeFileUpload(event) {
+  const resumeUploadStatus = document.getElementById('upload-status');
+  const resumeTextArea = document.getElementById('resume-text');
+  
   try {
     const file = event.target.files[0];
     if (!file) return;
@@ -111,20 +114,34 @@ async function handleResumeFileUpload(event) {
     
     if (file.type === 'application/pdf') {
       // Handle PDF file
-      const arrayBuffer = await file.arrayBuffer();
-      
-      // Send to background script for processing
-      const result = await chrome.runtime.sendMessage({
-        action: 'parsePDF',
-        data: { pdfBuffer: arrayBuffer }
-      });
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to parse PDF');
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        
+        // Convert ArrayBuffer to Uint8Array and then to regular array for safe message passing
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const arrayData = Array.from(uint8Array);
+        
+        console.log('Sending PDF data of length:', arrayData.length);
+        
+        // Send to background script for processing
+        const result = await chrome.runtime.sendMessage({
+          action: 'parsePDF',
+          data: { 
+            pdfData: arrayData,
+            fileName: file.name
+          }
+        });
+        
+        if (!result.success) {
+          throw new Error(result.error || 'Failed to parse PDF');
+        }
+        
+        resumeText = result.text;
+        structuredData = result.structuredData;
+      } catch (pdfError) {
+        console.error('PDF processing error:', pdfError);
+        throw new Error(`PDF processing error: ${pdfError.message}`);
       }
-      
-      resumeText = result.text;
-      structuredData = result.structuredData;
       
     } else {
       // Handle text file
@@ -147,27 +164,53 @@ async function handleResumeFileUpload(event) {
     }
     
     // Save resume text to storage
-    await chrome.storage.local.set({ resumeText });
+    await chrome.storage.local.set({
+      resumeContent: resumeText,
+      resumeFileName: file.name
+    });
     
     // If we have structured data, save that too
     if (structuredData) {
-      await chrome.storage.local.set({ resumeStructured: structuredData });
+      await chrome.storage.local.set({ resumeStructuredData: structuredData });
       displayStructuredResume(structuredData);
     } else {
       // If no structured data, hide the structured view
-      document.getElementById('structured-resume-view').style.display = 'none';
+      const structuredView = document.getElementById('structured-resume-view');
+      if (structuredView) {
+        structuredView.style.display = 'none';
+      }
     }
     
     // Update textarea
-    resumeTextArea.value = resumeText;
+    if (resumeTextArea) {
+      resumeTextArea.value = resumeText;
+    }
     
     // Update file name display
-    document.getElementById('resume-file-name').textContent = file.name;
+    const fileNameElement = document.getElementById('resume-file-name');
+    if (fileNameElement) {
+      fileNameElement.textContent = file.name;
+    }
     
     // Update status
     resumeUploadStatus.textContent = 'Resume uploaded successfully!';
     resumeUploadStatus.classList.add('success');
     resumeUploadStatus.classList.remove('processing', 'error');
+    
+    // Update resume preview in tailor tab
+    const resumeStatus = document.getElementById('resume-status');
+    const resumePreview = document.getElementById('resume-preview');
+    
+    if (resumeStatus && resumePreview) {
+      resumeStatus.textContent = `Resume loaded: ${file.name}`;
+      
+      if (structuredData) {
+        resumePreview.innerHTML = formatStructuredData(structuredData);
+        addStructuredDataDownloadButton();
+      } else {
+        resumePreview.textContent = truncateText(resumeText, 150);
+      }
+    }
     
     // Update tailor button state
     updateTailorButtonState();
@@ -386,15 +429,49 @@ async function saveResumeText() {
     return;
   }
   
-  // Store the resume content
-  await chrome.storage.local.set({ 
-    resumeContent: resumeText,
-    resumeFileName: 'Manual Entry'
-  });
+  uploadStatus.textContent = 'Processing...';
   
-  uploadStatus.textContent = 'Resume saved successfully';
-  document.getElementById('resume-text').value = '';
-  loadSavedData();
+  try {
+    // Store the resume content
+    await chrome.storage.local.set({ 
+      resumeContent: resumeText,
+      resumeFileName: 'Manual Entry'
+    });
+    
+    // Try to parse the resume text into structured data using the background script
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'parseResumeText',
+        data: { resumeText }
+      });
+      
+      if (result.success && result.structuredData) {
+        // Save structured data and display it
+        await chrome.storage.local.set({ resumeStructuredData: result.structuredData });
+        displayStructuredResume(result.structuredData);
+        
+        uploadStatus.textContent = 'Resume saved and structured successfully';
+      } else {
+        // Still saved, but without structured data
+        uploadStatus.textContent = 'Resume saved successfully (no structure detected)';
+        
+        // Hide structured view if it exists
+        const structuredView = document.getElementById('structured-resume-view');
+        if (structuredView) {
+          structuredView.style.display = 'none';
+        }
+      }
+    } catch (parseError) {
+      console.warn('Failed to parse resume structure:', parseError);
+      uploadStatus.textContent = 'Resume saved (without structure)';
+    }
+    
+    document.getElementById('resume-text').value = '';
+    loadSavedData();
+  } catch (error) {
+    console.error('Error saving resume text:', error);
+    uploadStatus.textContent = `Error: ${error.message || 'Failed to save resume'}`;
+  }
 }
 
 // Save API key
@@ -431,8 +508,14 @@ async function tailorResume() {
   tailorStatus.textContent = 'Tailoring resume...';
   
   // Get saved data
-  const { resumeContent, currentJobDescription, apiKey } = await chrome.storage.local.get([
+  const { 
+    resumeContent, 
+    resumeStructuredData, 
+    currentJobDescription, 
+    apiKey 
+  } = await chrome.storage.local.get([
     'resumeContent', 
+    'resumeStructuredData',
     'currentJobDescription',
     'apiKey'
   ]);
@@ -452,6 +535,7 @@ async function tailorResume() {
     action: 'tailorResume',
     data: {
       resume: resumeContent,
+      structuredData: resumeStructuredData, // Pass the structured data if available
       jobDescription: currentJobDescription
     }
   }, (response) => {
@@ -465,6 +549,11 @@ async function tailorResume() {
       downloadLink.textContent = 'Download Tailored Resume';
       downloadLink.style.display = 'block';
       downloadLink.style.marginTop = '10px';
+      downloadLink.className = 'download-link';
+      
+      // Check for existing download links and remove them
+      const existingLinks = document.querySelectorAll('.download-link');
+      existingLinks.forEach(link => link.remove());
       
       // Append download link
       const tailorTab = document.getElementById('tailor-tab');
@@ -536,15 +625,40 @@ async function loadSavedData() {
     // If we have structured data, display it nicely
     if (resumeStructuredData) {
       resumePreview.innerHTML = formatStructuredData(resumeStructuredData);
+      
+      // Also update the structured view if it exists
+      const structuredView = document.getElementById('structured-resume-view');
+      if (structuredView) {
+        displayStructuredResume(resumeStructuredData);
+      }
+      
+      // Add download button for structured data
+      addStructuredDataDownloadButton();
     } else {
       // Otherwise show the raw text
       resumePreview.textContent = truncateText(resumeContent, 150);
+      
+      // Hide structured view if it exists
+      const structuredView = document.getElementById('structured-resume-view');
+      if (structuredView) {
+        structuredView.style.display = 'none';
+      }
     }
-    
-    // Add download button for structured data if available
-    if (resumeStructuredData) {
-      addStructuredDataDownloadButton();
+  }
+  
+  // Update the resume text area in the upload tab if it exists
+  const resumeTextArea = document.getElementById('resume-text');
+  if (resumeTextArea && resumeContent) {
+    // Only set the value if the textarea is empty (don't overwrite user input)
+    if (!resumeTextArea.value.trim()) {
+      resumeTextArea.value = resumeContent;
     }
+  }
+  
+  // Update file name display if it exists
+  const fileNameElement = document.getElementById('resume-file-name');
+  if (fileNameElement && resumeFileName) {
+    fileNameElement.textContent = resumeFileName;
   }
   
   // Update job description information
